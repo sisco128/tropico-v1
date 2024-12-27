@@ -1,13 +1,8 @@
 # Dockerfile
 FROM python:3.11-slim
 
-# 1) Install system packages needed for subfinder & building + headless chromium for Playwright
-RUN apt-get update && apt-get install -y \
-    wget unzip ca-certificates fonts-liberation \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxcomposite1 libxdamage1 libxfixes3 \
-    libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 libxshmfence1 libx11-6 libx11-xcb1 libxcb1 \
-    libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libxslt1.1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# 1) Use the official Playwright + Python base
+FROM mcr.microsoft.com/playwright/python:v1.35.0-focal
 
 # 2) Download & install subfinder (pick a currently available version)
 RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
