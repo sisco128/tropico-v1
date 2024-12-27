@@ -7,9 +7,6 @@ from bs4 import BeautifulSoup
 import requests
 from urllib.parse import urljoin
 
-def discover_subdomains(*args, **kwargs):
-    print("Stub function called for discover_subdomains. This function is deprecated.")
-
 def discover_subdomains(scan_id, domain):
     """
     1) Subfinder for subdomains
