@@ -5,7 +5,7 @@ from rq import Queue
 import os
 
 from db import init_db, create_scan, get_scan
-from tasks import discover_subdomains_and_endpoints
+from tasks import discover_subdomains
 
 app = Flask(__name__)
 
@@ -27,7 +27,7 @@ def create_scan_api():
     # 1) Insert a new 'scan' row
     scan_id = create_scan(domain)
     # 2) Enqueue the new combined job
-    job = q.enqueue(discover_subdomains_and_endpoints, scan_id, domain)
+    job = q.enqueue(discover_subdomains, scan_id, domain)
     return jsonify({"scan_id": scan_id, "job_id": job.get_id()}), 201
 
 @app.route("/scans/<int:scan_id>", methods=["GET"])
