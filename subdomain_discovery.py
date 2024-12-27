@@ -5,8 +5,7 @@ import json
 def run_subfinder(domain):
     """
     Runs subfinder and returns a list of discovered subdomains.
-    Expects subfinder in PATH. Example:
-        subfinder -d example.com -oJ
+    Subfinder must be in PATH (/usr/local/bin/subfinder).
     """
     try:
         cmd = ["subfinder", "-d", domain, "-oJ"]
@@ -19,7 +18,9 @@ def run_subfinder(domain):
         for line in result.stdout.splitlines():
             if line.strip():
                 data = json.loads(line)
-                subdomains.append(data["host"])
+                host = data.get("host")
+                if host:
+                    subdomains.append(host)
         return subdomains
 
     except Exception as e:

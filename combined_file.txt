@@ -1,5 +1,6 @@
-===== tropico-v1 =====
+tropico-v1
 .
+├── Dockerfile
 ├── app.py
 ├── db.py
 ├── requirements.txt
@@ -191,247 +192,36 @@ def insert_subdomain(scan_id, subdomain):
 
 
 
-===== tasks.py =====
-# tasks.py
-from subdomain_discovery import run_subfinder
-from db import insert_subdomain, update_scan_status
+===== Dockerfile =====
+# Dockerfile
+FROM python:3.11-slim
 
-def discover_subdomains(scan_id, domain):
-    """
-    Runs subfinder, inserts subdomains, and updates the scan status.
-    """
-    try:
-        subdomains = run_subfinder(domain)
-        for sd in subdomains:
-            insert_subdomain(scan_id, sd)
-        update_scan_status(scan_id, 'complete')
-    except Exception as e:
-        print(f"Error in discover_subdomains: {e}")
-        update_scan_status(scan_id, 'error')
+# 1) Install packages needed for subfinder & building
+RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
 
+# 2) Download & install subfinder (use a currently available version)
+RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
+    && unzip subfinder.zip \
+    && mv subfinder /usr/local/bin/subfinder \
+    && chmod +x /usr/local/bin/subfinder \
+    && rm subfinder.zip
 
+# 3) Create a working directory
+WORKDIR /app
 
-===== subdomain_discovery.py =====
-# subdomain_discovery.py
-import subprocess
-import json
+# 4) Copy requirements and install Python libs, including gunicorn
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir gunicorn
 
-def run_subfinder(domain):
-    """
-    Runs subfinder and returns a list of discovered subdomains.
-    Expects subfinder in PATH. Example:
-        subfinder -d example.com -oJ
-    """
-    try:
-        cmd = ["subfinder", "-d", domain, "-oJ"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error running subfinder: {result.stderr}")
-            return []
+# 5) Copy the rest of your app code
+COPY . /app
 
-        subdomains = []
-        for line in result.stdout.splitlines():
-            if line.strip():
-                data = json.loads(line)
-                subdomains.append(data["host"])
-        return subdomains
+# 6) Expose port 8000 (Flask default)
+EXPOSE 8000
 
-    except Exception as e:
-        print(f"Exception in run_subfinder: {e}")
-        return []
-
-
-
-===== requirements.txt =====
-Flask==2.3.2
-redis==4.6.0
-rq==1.13.0
-psycopg2-binary==2.9.6  # or psycopg2 if not using binary
-sqlalchemy==2.0.21      # optional if using SQLAlchemy, or just raw psycopg2
-
-
-
-File not found: tropico-v1
-===== app.py =====
-# app.py
-from flask import Flask, request, jsonify
-from redis import Redis
-from rq import Queue
-import os
-
-from db import init_db, create_scan, get_scan
-from tasks import discover_subdomains
-
-app = Flask(__name__)
-
-# Init DB (creates tables if needed)
-init_db()
-
-# Configure Redis
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-redis_conn = Redis.from_url(REDIS_URL)
-q = Queue("default", connection=redis_conn)
-
-@app.route("/scans", methods=["POST"])
-def create_scan_api():
-    data = request.get_json()
-    domain = data.get("domain")
-    if not domain:
-        return jsonify({"error": "domain is required"}), 400
-
-    # Insert a scan record, get its ID
-    scan_id = create_scan(domain)
-
-    # Enqueue the subdomain discovery job
-    job = q.enqueue(discover_subdomains, scan_id, domain)
-
-    return jsonify({"scan_id": scan_id, "job_id": job.get_id()}), 201
-
-@app.route("/scans/<int:scan_id>", methods=["GET"])
-def get_scan_api(scan_id):
-    scan_data = get_scan(scan_id)
-    if not scan_data:
-        return jsonify({"error": "Not found"}), 404
-    return jsonify(scan_data)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
-
-
-
-===== worker.py =====
-# worker.py
-import os
-from rq import Worker, Queue, Connection
-from redis import Redis
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-listen = ["default"]
-
-redis_conn = Redis.from_url(REDIS_URL)
-
-if __name__ == "__main__":
-    with Connection(redis_conn):
-        worker = Worker(map(Queue, listen))
-        worker.work()
-
-
-
-===== db.py =====
-# db.py
-import os
-import psycopg2
-
-def get_connection():
-    """
-    Connect to Postgres using DATABASE_URL or fallback DSN with 'localhost'.
-    """
-    db_url = os.getenv("DATABASE_URL") or "postgres://siscolo:@localhost:5432/my_local_db"
-    return psycopg2.connect(db_url)
-
-def init_db():
-    """
-    Create the tables if they don't exist.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # 'scans' table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS scans (
-            id SERIAL PRIMARY KEY,
-            domain VARCHAR(255) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'queued',
-            created_at TIMESTAMP NOT NULL DEFAULT NOW()
-        );
-    """)
-
-    # 'subdomains' table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS subdomains (
-            id SERIAL PRIMARY KEY,
-            scan_id INTEGER NOT NULL REFERENCES scans(id),
-            subdomain VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT NOW()
-        );
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def create_scan(domain):
-    """
-    Insert a new row in the 'scans' table and return its ID.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO scans (domain) VALUES (%s) RETURNING id;", (domain,))
-    scan_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return scan_id
-
-def get_scan(scan_id):
-    """
-    Return the scan record plus any subdomains discovered.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, domain, status, created_at
-        FROM scans
-        WHERE id = %s
-    """, (scan_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return None
-
-    scan_data = {
-        "id": row[0],
-        "domain": row[1],
-        "status": row[2],
-        "created_at": str(row[3])  # datetime -> string
-    }
-
-    # Collect all subdomains
-    cur.execute("SELECT subdomain FROM subdomains WHERE scan_id = %s", (scan_id,))
-    subdomains = [r[0] for r in cur.fetchall()]
-    scan_data["subdomains"] = subdomains
-
-    cur.close()
-    conn.close()
-    return scan_data
-
-def update_scan_status(scan_id, status):
-    """
-    Update the 'status' field in the 'scans' table.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE scans SET status=%s WHERE id=%s;", (status, scan_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def insert_subdomain(scan_id, subdomain):
-    """
-    Insert a discovered subdomain into the 'subdomains' table.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO subdomains (scan_id, subdomain)
-        VALUES (%s, %s)
-        ON CONFLICT DO NOTHING
-    """, (scan_id, subdomain))
-    conn.commit()
-    cur.close()
-    conn.close()
+# 7) Default command: runs the Flask app with gunicorn
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
 
 
 
@@ -490,8 +280,9 @@ def run_subfinder(domain):
 Flask==2.3.2
 redis==4.6.0
 rq==1.13.0
-psycopg2-binary==2.9.6  # or psycopg2 if not using binary
-sqlalchemy==2.0.21      # optional if using SQLAlchemy, or just raw psycopg2
+psycopg2-binary==2.9.6
+sqlalchemy==2.0.21
+gunicorn==21.2.0
 
 
 
