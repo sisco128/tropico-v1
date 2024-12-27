@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 def discover_subdomains(*args, **kwargs):
     print("Stub function called for discover_subdomains. This function is deprecated.")
 
-def discover_subdomains_and_endpoints(scan_id, domain):
+def discover_subdomains(scan_id, domain):
     """
     1) Subfinder for subdomains
     2) For each subdomain -> discover endpoints -> analyze -> store in DB
@@ -34,8 +34,9 @@ def discover_subdomains_and_endpoints(scan_id, domain):
         update_scan_status(scan_id, 'complete')
 
     except Exception as e:
-        print(f"Error in discover_subdomains_and_endpoints: {e}")
+        print(f"Error in discover_subdomains: {e}")
         update_scan_status(scan_id, 'error')
+
 
 def discover_endpoints(subdomain):
     """
