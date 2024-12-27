@@ -4,7 +4,10 @@ FROM python:3.11-slim
 # 1) Use the official Playwright + Python base
 FROM mcr.microsoft.com/playwright/python:v1.35.0-focal
 
-# 2) Download & install subfinder (use a currently available version)
+# 2) Install packages needed for subfinder (wget, unzip)
+RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
+
+# 3) Download & install subfinder (pick a valid version)
 RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
     && unzip subfinder.zip \
     && mv subfinder /usr/local/bin/subfinder \
