@@ -70,19 +70,25 @@ def create_scan(domain):
 
 def get_scan(scan_id):
     """
-    Return the scan record plus subdomains and **flattened** endpoints.
-    subdomains: [ "sub1.example.com", "sub2.example.com", ... ]
-    endpoints: [
-      {
-        "subdomain": "sub1.example.com",
-        "url": "https://...",
-        "status_code": ...,
-        "content_type": ...,
-        "server": ...,
-        "framework": ...
-      },
-      { ...more... }
-    ]
+    Return the scan record plus subdomains (list) and endpoints (flattened list).
+    {
+      "id": ...,
+      "domain": ...,
+      "status": ...,
+      "created_at": ...,
+      "subdomains": [...],
+      "endpoints": [
+        {
+          "subdomain": "...",
+          "url": "...",
+          "status_code": ...,
+          "content_type": ...,
+          "server": ...,
+          "framework": ...
+        },
+        ...
+      ]
+    }
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -103,10 +109,10 @@ def get_scan(scan_id):
         "id": row[0],
         "domain": row[1],
         "status": row[2],
-        "created_at": str(row[3])  # datetime -> string
+        "created_at": str(row[3])
     }
 
-    # fetch subdomains as a simple list
+    # fetch subdomains
     cur.execute("SELECT subdomain FROM subdomains WHERE scan_id = %s", (scan_id,))
     subdomain_rows = cur.fetchall()
     scan_data["subdomains"] = [r[0] for r in subdomain_rows]
