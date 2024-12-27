@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 2) Download & install subfinder (pick a currently available version)
-RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.10.5/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
+RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
     && unzip subfinder.zip \
     && mv subfinder /usr/local/bin/subfinder \
     && chmod +x /usr/local/bin/subfinder \
