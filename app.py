@@ -38,7 +38,6 @@ def get_scan_api(scan_id):
     return jsonify(scan_data)
 
 if __name__ == "__main__":
-    # For local dev, you can run:
-    #   python app.py
-    # but in Docker we typically use gunicorn (see Dockerfile CMD).
+    # For local dev run:
+    # python app.py
     app.run(host="0.0.0.0", port=8000, debug=True)
