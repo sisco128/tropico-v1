@@ -130,3 +130,75 @@ def create_domain(account_uid, domain_uid, domain_name):
     conn.commit()
     cur.close()
     conn.close()
+
+def create_scan(account_uid, domain_uid, scan_uid):
+    """
+    Insert a new scan into the 'scans' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Find the account ID and domain
+    cur.execute("""
+        SELECT a.id, s.id FROM accounts a
+        JOIN scans s ON a.id = s.account_id
+        WHERE a.uid = %s AND s.domain = %s;
+    """, (account_uid, domain_uid))
+    result = cur.fetchone()
+    if not result:
+        raise ValueError("Account or domain not found")
+
+    account_id, domain_id = result
+
+    # Insert the scan
+    cur.execute("""
+        INSERT INTO scans (account_id, domain, status)
+        VALUES (%s, %s, 'queued');
+    """, (account_id, domain_uid))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def get_scan(scan_id):
+    """
+    Retrieve scan data by scan_id.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, account_id, domain, status, created_at
+        FROM scans WHERE id = %s;
+    """, (scan_id,))
+    scan_data = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if scan_data:
+        return {
+            "id": scan_data[0],
+            "account_id": scan_data[1],
+            "domain": scan_data[2],
+            "status": scan_data[3],
+            "created_at": scan_data[4]
+        }
+    return None
+
+def get_endpoint_details(endpoint_id):
+    """
+    Retrieve endpoint details by endpoint_id.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM endpoints WHERE id = %s;
+    """, (endpoint_id,))
+    endpoint_data = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    return endpoint_data
