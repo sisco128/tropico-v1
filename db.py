@@ -1,12 +1,13 @@
 import os
 import psycopg2
+from psycopg2.extras import RealDictCursor
 
 def get_connection():
     """
     Connect to Postgres using DATABASE_URL or fallback DSN with 'localhost'.
     """
     db_url = os.getenv("DATABASE_URL") or "postgres://siscolo:@localhost:5432/my_local_db"
-    return psycopg2.connect(db_url)
+    return psycopg2.connect(db_url, cursor_factory=RealDictCursor)
 
 def init_db():
     """
@@ -56,7 +57,7 @@ def init_db():
             content_type VARCHAR(255),
             server VARCHAR(255),
             framework VARCHAR(255),
-            alerts UUID[] DEFAULT ARRAY[]::UUID[],  -- Array of related alert IDs
+            alerts UUID[] DEFAULT ARRAY[]::UUID[],
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
     """)
@@ -89,42 +90,86 @@ def init_db():
     cur.close()
     conn.close()
 
-def insert_alert(endpoint_id, alert_data):
+def create_account():
     """
-    Insert a new alert into the 'alerts' table.
+    Create a new account and return its details.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        INSERT INTO alerts (
-            endpoint_id, name, description, url, method, parameter, attack, evidence,
-            other_info, instances, solution, references, severity, cwe_id, wasc_id, plugin_id
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-        ) RETURNING id;
-    """, (
-        endpoint_id,
-        alert_data["name"],
-        alert_data["description"],
-        alert_data["url"],
-        alert_data.get("method", "GET"),
-        alert_data.get("parameter"),
-        alert_data.get("attack"),
-        alert_data.get("evidence"),
-        alert_data.get("other_info"),
-        alert_data.get("instances", 1),
-        alert_data.get("solution"),
-        alert_data.get("references", []),
-        alert_data.get("severity"),
-        alert_data.get("cwe_id"),
-        alert_data.get("wasc_id"),
-        alert_data.get("plugin_id"),
-    ))
-    
-    alert_id = cur.fetchone()[0]
+        INSERT INTO accounts (uid, created_at)
+        VALUES (gen_random_uuid(), NOW())
+        RETURNING *;
+    """)
+    account = cur.fetchone()
     conn.commit()
     cur.close()
     conn.close()
+    return account
 
-    return alert_id
+def create_scan(account_id, domain):
+    """
+    Create a new scan and return its details.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO scans (account_id, domain, status, created_at)
+        VALUES (%s, %s, 'queued', NOW())
+        RETURNING *;
+    """, (account_id, domain))
+    scan = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return scan
+
+def get_scan(scan_id):
+    """
+    Get scan details by ID.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM scans WHERE id = %s;
+    """, (scan_id,))
+    scan = cur.fetchone()
+    cur.close()
+    conn.close()
+    return scan
+
+def get_endpoint_details(scan_id):
+    """
+    Get all endpoint details for a specific scan.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM endpoints WHERE scan_id = %s;
+    """, (scan_id,))
+    endpoints = cur.fetchall()
+    cur.close()
+    conn.close()
+    return endpoints
+
+def create_domain(scan_id, subdomain, url):
+    """
+    Create a new endpoint under a domain.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO endpoints (scan_id, subdomain, url, created_at)
+        VALUES (%s, %s, %s, NOW())
+        RETURNING *;
+    """, (scan_id, subdomain, url))
+    endpoint = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return endpoint
