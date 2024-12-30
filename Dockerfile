@@ -40,5 +40,5 @@ EXPOSE 8000
 # Expose port 8080 for ZAP API
 EXPOSE 8080
 
-# Start ZAP as a background process
+# Start ZAP as a background process and Flask app using Gunicorn
 CMD ["/bin/bash", "-c", "/zap/zap.sh -daemon -host 0.0.0.0 -port 8080 -config api.key=your_zap_api_key & gunicorn -b 0.0.0.0:8000 app:app"]
