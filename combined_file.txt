@@ -1,21 +1,13 @@
-tropico-v1
-├── Dockerfile
-├── app.py
-├── db.py
-├── requirements.txt
-├── subdomain_discovery.py
-├── tasks.py
-└── worker.py
-
+File not found: tropico-v1
 ===== app.py =====
-# app.py
 from flask import Flask, request, jsonify
 from redis import Redis
 from rq import Queue
 import os
+import uuid
 
-from db import init_db, create_scan, get_scan
-from tasks import discover_subdomains
+from db import init_db, create_account, create_domain, create_scan, get_scan, get_endpoint_details
+from tasks import discover_subdomains_and_endpoints
 
 app = Flask(__name__)
 
@@ -27,29 +19,52 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_conn = Redis.from_url(REDIS_URL)
 q = Queue("default", connection=redis_conn)
 
-@app.route("/scans", methods=["POST"])
-def create_scan_api():
+@app.route("/account", methods=["POST"])
+def create_account_api():
     data = request.get_json()
-    domain = data.get("domain")
-    if not domain:
-        return jsonify({"error": "domain is required"}), 400
+    account_name = data.get("account_name")
+    if not account_name:
+        return jsonify({"error": "account_name is required"}), 400
+    
+    account_uid = str(uuid.uuid4())
+    create_account(account_uid, account_name)
+    return jsonify({"account_uid": account_uid}), 201
 
-    # 1) Insert a new 'scan' row
-    scan_id = create_scan(domain)
-    # 2) Enqueue the new combined job
-    job = q.enqueue(discover_subdomains, scan_id, domain)
-    return jsonify({"scan_id": scan_id, "job_id": job.get_id()}), 201
+@app.route("/account/<account_uid>/domain", methods=["POST"])
+def create_domain_api(account_uid):
+    data = request.get_json()
+    domain_name = data.get("domain_name")
+    if not domain_name:
+        return jsonify({"error": "domain_name is required"}), 400
 
-@app.route("/scans/<int:scan_id>", methods=["GET"])
-def get_scan_api(scan_id):
-    scan_data = get_scan(scan_id)
+    domain_uid = str(uuid.uuid4())
+    create_domain(account_uid, domain_uid, domain_name)
+    return jsonify({"domain_uid": domain_uid}), 201
+
+@app.route("/account/<account_uid>/domain/<domain_uid>/scan", methods=["POST"])
+def create_scan_api(account_uid, domain_uid):
+    scan_uid = str(uuid.uuid4())
+    create_scan(account_uid, domain_uid, scan_uid)
+
+    # Enqueue the combined subdomain, endpoint discovery, and ZAP scan job
+    job = q.enqueue(discover_subdomains_and_endpoints, scan_uid, domain_uid)
+    return jsonify({"scan_uid": scan_uid, "job_id": job.get_id()}), 201
+
+@app.route("/account/<account_uid>/domain/<domain_uid>/scan/<scan_uid>", methods=["GET"])
+def get_scan_results_api(account_uid, domain_uid, scan_uid):
+    scan_data = get_scan(scan_uid)
     if not scan_data:
         return jsonify({"error": "Not found"}), 404
     return jsonify(scan_data)
 
+@app.route("/account/<account_uid>/endpoint/<endpoint_uid>", methods=["GET"])
+def get_endpoint_details_api(account_uid, endpoint_uid):
+    endpoint_data = get_endpoint_details(endpoint_uid)
+    if not endpoint_data:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(endpoint_data)
+
 if __name__ == "__main__":
-    # For local dev run:
-    # python app.py
     app.run(host="0.0.0.0", port=8000, debug=True)
 
 
@@ -73,7 +88,6 @@ if __name__ == "__main__":
 
 
 ===== db.py =====
-# db.py
 import os
 import psycopg2
 
@@ -86,15 +100,26 @@ def get_connection():
 
 def init_db():
     """
-    Create the tables if they don't exist (scans, subdomains, endpoints).
+    Create the tables if they don't exist.
     """
     conn = get_connection()
     cur = conn.cursor()
+
+    # accounts table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            id SERIAL PRIMARY KEY,
+            uid UUID NOT NULL DEFAULT gen_random_uuid(),
+            account_name VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
 
     # scans table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scans (
             id SERIAL PRIMARY KEY,
+            account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
             domain VARCHAR(255) NOT NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'queued',
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -105,7 +130,7 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS subdomains (
             id SERIAL PRIMARY KEY,
-            scan_id INTEGER NOT NULL REFERENCES scans(id),
+            scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
             subdomain VARCHAR(255) NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
@@ -115,13 +140,38 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS endpoints (
             id SERIAL PRIMARY KEY,
-            scan_id INTEGER NOT NULL REFERENCES scans(id),
+            scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
             subdomain VARCHAR(255) NOT NULL,
             url TEXT NOT NULL,
             status_code INTEGER,
             content_type VARCHAR(255),
             server VARCHAR(255),
             framework VARCHAR(255),
+            alerts UUID[] DEFAULT ARRAY[]::UUID[],  -- Array of related alert IDs
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        );
+    """)
+
+    # alerts table
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            endpoint_id INTEGER NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            url TEXT NOT NULL,
+            method VARCHAR(10) DEFAULT 'GET',
+            parameter VARCHAR(255),
+            attack TEXT,
+            evidence TEXT,
+            other_info TEXT,
+            instances INTEGER DEFAULT 1,
+            solution TEXT,
+            references TEXT[],
+            severity VARCHAR(50),
+            cwe_id VARCHAR(50),
+            wasc_id VARCHAR(50),
+            plugin_id VARCHAR(50),
             created_at TIMESTAMP NOT NULL DEFAULT NOW()
         );
     """)
@@ -130,138 +180,103 @@ def init_db():
     cur.close()
     conn.close()
 
-def create_scan(domain):
-    """
-    Insert a new row in the 'scans' table and return its ID.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO scans (domain) VALUES (%s) RETURNING id;", (domain,))
-    scan_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return scan_id
-
-def get_scan(scan_id):
-    """
-    Return the scan record plus subdomains (list) and endpoints (flattened list).
-    {
-      "id": ...,
-      "domain": ...,
-      "status": ...,
-      "created_at": ...,
-      "subdomains": [...],
-      "endpoints": [
-        {
-          "subdomain": "...",
-          "url": "...",
-          "status_code": ...,
-          "content_type": ...,
-          "server": ...,
-          "framework": ...
-        },
-        ...
-      ]
-    }
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # fetch the scan row
-    cur.execute("""
-        SELECT id, domain, status, created_at
-        FROM scans
-        WHERE id = %s
-    """, (scan_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return None
-
-    scan_data = {
-        "id": row[0],
-        "domain": row[1],
-        "status": row[2],
-        "created_at": str(row[3])
-    }
-
-    # fetch subdomains
-    cur.execute("SELECT subdomain FROM subdomains WHERE scan_id = %s", (scan_id,))
-    subdomain_rows = cur.fetchall()
-    scan_data["subdomains"] = [r[0] for r in subdomain_rows]
-
-    # fetch endpoints as a flattened list
-    cur.execute("""
-        SELECT subdomain, url, status_code, content_type, server, framework
-        FROM endpoints
-        WHERE scan_id = %s
-    """, (scan_id,))
-    endpoint_rows = cur.fetchall()
-
-    endpoints_list = []
-    for (subd, url, st_code, ctype, srv, fw) in endpoint_rows:
-        endpoints_list.append({
-            "subdomain": subd,
-            "url": url,
-            "status_code": st_code,
-            "content_type": ctype,
-            "server": srv,
-            "framework": fw
-        })
-
-    scan_data["endpoints"] = endpoints_list
-
-    cur.close()
-    conn.close()
-    return scan_data
-
-def update_scan_status(scan_id, status):
-    """
-    Update the 'status' field in the 'scans' table.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE scans SET status=%s WHERE id=%s;", (status, scan_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
+# Function to insert subdomains
 def insert_subdomain(scan_id, subdomain):
     """
-    Insert a discovered subdomain into 'subdomains' table.
+    Insert a subdomain into the 'subdomains' table.
     """
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
         INSERT INTO subdomains (scan_id, subdomain)
-        VALUES (%s, %s)
-        ON CONFLICT DO NOTHING
+        VALUES (%s, %s);
     """, (scan_id, subdomain))
+
     conn.commit()
     cur.close()
     conn.close()
 
-def insert_endpoint(scan_id, subdomain, endpoint_data):
+# Function to update scan status
+def update_scan_status(scan_id, status):
     """
-    Insert a discovered endpoint (URL, status_code, content_type, etc.) into 'endpoints' table.
+    Update the status of a scan.
     """
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
-        INSERT INTO endpoints (scan_id, subdomain, url, status_code, content_type, server, framework)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT DO NOTHING
+        UPDATE scans
+        SET status = %s
+        WHERE id = %s;
+    """, (status, scan_id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Function to insert endpoints
+def insert_endpoint(scan_id, subdomain, endpoint_data):
+    """
+    Insert an endpoint into the 'endpoints' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO endpoints (
+            scan_id, subdomain, url, status_code, content_type, server, framework
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s
+        );
     """, (
         scan_id,
         subdomain,
         endpoint_data["url"],
-        endpoint_data["status_code"],
-        endpoint_data["content_type"],
-        endpoint_data["server"],
-        endpoint_data["framework"],
+        endpoint_data.get("status_code"),
+        endpoint_data.get("content_type"),
+        endpoint_data.get("server"),
+        endpoint_data.get("framework"),
     ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Function to insert alerts
+def insert_alert(endpoint_id, alert_data):
+    """
+    Insert a new alert into the 'alerts' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO alerts (
+            endpoint_id, name, description, url, method, parameter, attack, evidence,
+            other_info, instances, solution, references, severity, cwe_id, wasc_id, plugin_id
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+    """, (
+        endpoint_id,
+        alert_data["name"],
+        alert_data["description"],
+        alert_data["url"],
+        alert_data.get("method", "GET"),
+        alert_data.get("parameter"),
+        alert_data.get("attack"),
+        alert_data.get("evidence"),
+        alert_data.get("other_info"),
+        alert_data.get("instances", 1),
+        alert_data.get("solution"),
+        alert_data.get("references", []),
+        alert_data.get("severity"),
+        alert_data.get("cwe_id"),
+        alert_data.get("wasc_id"),
+        alert_data.get("plugin_id"),
+    ))
+
     conn.commit()
     cur.close()
     conn.close()
@@ -269,84 +284,85 @@ def insert_endpoint(scan_id, subdomain, endpoint_data):
 
 
 ===== Dockerfile =====
-# Dockerfile
-FROM python:3.11-slim
-
-# 1) Use the official Playwright + Python base
+# Base Image
 FROM mcr.microsoft.com/playwright/python:v1.35.0-focal
 
-# 2) Install packages needed for subfinder (wget, unzip)
-RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
+# Install packages needed for Subfinder and Python
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
 
-# 3) Download & install subfinder (pick a valid version)
+# Install Subfinder
 RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
     && unzip subfinder.zip \
     && mv subfinder /usr/local/bin/subfinder \
     && chmod +x /usr/local/bin/subfinder \
     && rm subfinder.zip
 
+# Set working directory
 WORKDIR /app
 
-# 3) Copy requirements & install Python deps
+# Copy requirements and install Python dependencies
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4) Install Playwright’s browsers (Chromium)
+# Install Playwright browsers
 RUN playwright install --with-deps chromium
 
-# 5) Copy the rest of your app code
+# Copy the rest of the application
 COPY . /app
 
-# Expose port 8000 for Flask/gunicorn
+# Expose port 8000 for Flask app
 EXPOSE 8000
 
-# Default command: run gunicorn on port 8000
+# Default command to run the Flask app
 CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
 
 
 
 ===== tasks.py =====
-# tasks.py
-from db import insert_subdomain, update_scan_status, insert_endpoint
+import os
+import requests
+from db import insert_subdomain, update_scan_status, insert_endpoint, insert_alert
 from subdomain_discovery import run_subfinder
-
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-import requests
 from urllib.parse import urljoin
 
-def discover_subdomains(scan_id, domain):
+ZAP_API_KEY = os.getenv("ZAP_API_KEY")  # Fetch from environment variable
+ZAP_BASE_URL = "http://zap-service:8080"
+
+def discover_subdomains_and_endpoints(scan_id, domain_uid):
     """
-    1) Subfinder for subdomains
-    2) For each subdomain -> discover endpoints -> analyze -> store in DB
-    3) Mark 'complete' or 'error'
+    Combines subdomain discovery, endpoint discovery, and ZAP passive scanning.
     """
     try:
-        # 1) Subdomain discovery
-        subdomains = run_subfinder(domain)
+        # Subdomain discovery
+        subdomains = run_subfinder(domain_uid)
         for sd in subdomains:
             insert_subdomain(scan_id, sd)
 
-        # 2) For each subdomain, discover & analyze endpoints
-        for subd in subdomains:
-            discovered_urls = discover_endpoints(subd)
+        # Endpoint discovery
+        for subdomain in subdomains:
+            discovered_urls = discover_endpoints(subdomain)
             for url in discovered_urls:
                 ep_data = analyze_api(url)
                 if ep_data:
-                    insert_endpoint(scan_id, subd, ep_data)
+                    endpoint_id = insert_endpoint(scan_id, subdomain, ep_data)
+                    run_zap_scan(endpoint_id, url)
 
-        # 3) Mark completed
-        update_scan_status(scan_id, 'complete')
+        # Mark scan as complete
+        update_scan_status(scan_id, "complete")
 
     except Exception as e:
-        print(f"Error in discover_subdomains: {e}")
-        update_scan_status(scan_id, 'error')
+        print(f"Error in discover_subdomains_and_endpoints: {e}")
+        update_scan_status(scan_id, "error")
 
 
 def discover_endpoints(subdomain):
     """
-    Use Playwright + BeautifulSoup to gather all 'href' and 'src' from <a> and <script>.
-    Returns a list of absolute URLs.
+    Use Playwright and BeautifulSoup to discover endpoints from subdomains.
     """
     discovered_urls = []
     url = f"https://{subdomain}"
@@ -365,22 +381,20 @@ def discover_endpoints(subdomain):
             links = [a.get("href") for a in soup.find_all("a", href=True)]
             scripts = [s.get("src") for s in soup.find_all("script", src=True)]
 
-            all_urls = []
             for link in links + scripts:
                 if link:
-                    full_url = urljoin(url, link)
-                    all_urls.append(full_url)
+                    discovered_urls.append(urljoin(url, link))
 
-            discovered_urls = list(set(all_urls))
+            discovered_urls = list(set(discovered_urls))
             browser.close()
     except Exception as e:
         print(f"Error discovering endpoints on {subdomain}: {e}")
-
     return discovered_urls
+
 
 def analyze_api(url):
     """
-    Makes a GET request to the URL, returns basic info as dict or None if failed.
+    Perform basic analysis of the given URL.
     """
     try:
         r = requests.get(url, timeout=5)
@@ -394,6 +408,45 @@ def analyze_api(url):
     except Exception as e:
         print(f"Error analyzing URL {url}: {e}")
         return None
+
+
+def run_zap_scan(endpoint_id, url):
+    """
+    Starts a ZAP passive scan for the given URL and logs alerts.
+    """
+    try:
+        # Start ZAP Spider
+        response = requests.get(
+            f"{ZAP_BASE_URL}/JSON/spider/action/scan/",
+            params={"apikey": ZAP_API_KEY, "url": url, "maxChildren": 10},
+        )
+        response.raise_for_status()
+        scan_id = response.json().get("scan")
+        if not scan_id:
+            print(f"Failed to start ZAP Spider for {url}")
+            return
+
+        # Poll Spider Status
+        while True:
+            status_response = requests.get(
+                f"{ZAP_BASE_URL}/JSON/spider/view/status/",
+                params={"apikey": ZAP_API_KEY, "scanId": scan_id},
+            )
+            status_response.raise_for_status()
+            if status_response.json().get("status") == "100":
+                break
+
+        # Retrieve Alerts
+        alerts_response = requests.get(
+            f"{ZAP_BASE_URL}/JSON/core/view/alerts/",
+            params={"apikey": ZAP_API_KEY, "baseurl": url},
+        )
+        alerts_response.raise_for_status()
+        alerts = alerts_response.json().get("alerts", [])
+        for alert in alerts:
+            insert_alert(endpoint_id, alert)
+    except Exception as e:
+        print(f"Error running ZAP scan on {url}: {e}")
 
 
 
@@ -436,10 +489,10 @@ rq==1.13.0
 psycopg2-binary==2.9.6
 sqlalchemy==2.0.21
 gunicorn==21.2.0
-
 requests==2.31.0
 beautifulsoup4==4.12.2
 playwright==1.35.0
+uuid==1.30
 
 
 

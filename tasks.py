@@ -1,25 +1,29 @@
 import os
 import requests
-from db import insert_subdomain, update_scan_status, insert_endpoint, insert_alert
+from db import insert_alert, insert_subdomain, update_scan_status, insert_endpoint
 from subdomain_discovery import run_subfinder
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-ZAP_API_KEY = os.getenv("ZAP_API_KEY")  # Fetch from environment variable
-ZAP_BASE_URL = "http://zap-service:8080"
+ZAP_API_KEY = os.getenv("ZAP_API_KEY")
+ZAP_BASE_URL = "http://zap-service:8080"  # Corrected to match the provided configuration
+
 
 def discover_subdomains_and_endpoints(scan_id, domain_uid):
     """
     Combines subdomain discovery, endpoint discovery, and ZAP passive scanning.
     """
     try:
+        # Mark scan as started
+        update_scan_status(scan_id, "in_progress")
+
         # Subdomain discovery
         subdomains = run_subfinder(domain_uid)
-        for sd in subdomains:
-            insert_subdomain(scan_id, sd)
+        for subdomain in subdomains:
+            insert_subdomain(scan_id, subdomain)
 
-        # Endpoint discovery
+        # Endpoint discovery and ZAP scanning
         for subdomain in subdomains:
             discovered_urls = discover_endpoints(subdomain)
             for url in discovered_urls:
