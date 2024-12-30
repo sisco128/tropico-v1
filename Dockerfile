@@ -9,10 +9,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ZAP
-RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.12.0/ZAP_2_12_0_unix.sh \
-    && chmod +x ZAP_2_12_0_unix.sh \
-    && ./ZAP_2_12_0_unix.sh -q -dir /zap \
-    && rm ZAP_2_12_0_unix.sh
+RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.11.0/ZAP_2_11_0_unix.sh \
+    && chmod +x ZAP_2_11_0_unix.sh \
+    && ./ZAP_2_11_0_unix.sh -q -dir /zap \
+    && rm ZAP_2_11_0_unix.sh
 
 # Install Subfinder
 RUN wget https://github.com/projectdiscovery/subfinder/releases/download/v2.6.7/subfinder_2.6.7_linux_amd64.zip -O subfinder.zip \
