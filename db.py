@@ -90,115 +90,103 @@ def init_db():
     cur.close()
     conn.close()
 
-def create_account(account_uid, account_name):
+# Function to insert subdomains
+def insert_subdomain(scan_id, subdomain):
     """
-    Insert a new account into the 'accounts' table.
+    Insert a subdomain into the 'subdomains' table.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        INSERT INTO accounts (uid, account_name)
+        INSERT INTO subdomains (scan_id, subdomain)
         VALUES (%s, %s);
-    """, (account_uid, account_name))
+    """, (scan_id, subdomain))
 
     conn.commit()
     cur.close()
     conn.close()
 
-def create_domain(account_uid, domain_uid, domain_name):
+# Function to update scan status
+def update_scan_status(scan_id, status):
     """
-    Insert a new domain into the 'scans' table.
+    Update the status of a scan.
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Find the account ID using account_uid
     cur.execute("""
-        SELECT id FROM accounts WHERE uid = %s;
-    """, (account_uid,))
-    account_id = cur.fetchone()
-    if not account_id:
-        raise ValueError("Account not found")
-
-    # Insert the domain
-    cur.execute("""
-        INSERT INTO scans (account_id, domain, status)
-        VALUES (%s, %s, 'queued');
-    """, (account_id[0], domain_name))
+        UPDATE scans
+        SET status = %s
+        WHERE id = %s;
+    """, (status, scan_id))
 
     conn.commit()
     cur.close()
     conn.close()
 
-def create_scan(account_uid, domain_uid, scan_uid):
+# Function to insert endpoints
+def insert_endpoint(scan_id, subdomain, endpoint_data):
     """
-    Insert a new scan into the 'scans' table.
+    Insert an endpoint into the 'endpoints' table.
     """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Find the account ID and domain
     cur.execute("""
-        SELECT a.id, s.id FROM accounts a
-        JOIN scans s ON a.id = s.account_id
-        WHERE a.uid = %s AND s.domain = %s;
-    """, (account_uid, domain_uid))
-    result = cur.fetchone()
-    if not result:
-        raise ValueError("Account or domain not found")
-
-    account_id, domain_id = result
-
-    # Insert the scan
-    cur.execute("""
-        INSERT INTO scans (account_id, domain, status)
-        VALUES (%s, %s, 'queued');
-    """, (account_id, domain_uid))
+        INSERT INTO endpoints (
+            scan_id, subdomain, url, status_code, content_type, server, framework
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s
+        );
+    """, (
+        scan_id,
+        subdomain,
+        endpoint_data["url"],
+        endpoint_data.get("status_code"),
+        endpoint_data.get("content_type"),
+        endpoint_data.get("server"),
+        endpoint_data.get("framework"),
+    ))
 
     conn.commit()
     cur.close()
     conn.close()
 
-def get_scan(scan_id):
+# Function to insert alerts
+def insert_alert(endpoint_id, alert_data):
     """
-    Retrieve scan data by scan_id.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, account_id, domain, status, created_at
-        FROM scans WHERE id = %s;
-    """, (scan_id,))
-    scan_data = cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    if scan_data:
-        return {
-            "id": scan_data[0],
-            "account_id": scan_data[1],
-            "domain": scan_data[2],
-            "status": scan_data[3],
-            "created_at": scan_data[4]
-        }
-    return None
-
-def get_endpoint_details(endpoint_id):
-    """
-    Retrieve endpoint details by endpoint_id.
+    Insert a new alert into the 'alerts' table.
     """
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT * FROM endpoints WHERE id = %s;
-    """, (endpoint_id,))
-    endpoint_data = cur.fetchone()
+        INSERT INTO alerts (
+            endpoint_id, name, description, url, method, parameter, attack, evidence,
+            other_info, instances, solution, references, severity, cwe_id, wasc_id, plugin_id
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+    """, (
+        endpoint_id,
+        alert_data["name"],
+        alert_data["description"],
+        alert_data["url"],
+        alert_data.get("method", "GET"),
+        alert_data.get("parameter"),
+        alert_data.get("attack"),
+        alert_data.get("evidence"),
+        alert_data.get("other_info"),
+        alert_data.get("instances", 1),
+        alert_data.get("solution"),
+        alert_data.get("references", []),
+        alert_data.get("severity"),
+        alert_data.get("cwe_id"),
+        alert_data.get("wasc_id"),
+        alert_data.get("plugin_id"),
+    ))
 
+    conn.commit()
     cur.close()
     conn.close()
-
-    return endpoint_data
