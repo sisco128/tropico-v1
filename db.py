@@ -105,3 +105,28 @@ def create_account(account_uid, account_name):
     conn.commit()
     cur.close()
     conn.close()
+
+def create_domain(account_uid, domain_uid, domain_name):
+    """
+    Insert a new domain into the 'scans' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Find the account ID using account_uid
+    cur.execute("""
+        SELECT id FROM accounts WHERE uid = %s;
+    """, (account_uid,))
+    account_id = cur.fetchone()
+    if not account_id:
+        raise ValueError("Account not found")
+
+    # Insert the domain
+    cur.execute("""
+        INSERT INTO scans (account_id, domain, status)
+        VALUES (%s, %s, 'queued');
+    """, (account_id[0], domain_name))
+
+    conn.commit()
+    cur.close()
+    conn.close()
