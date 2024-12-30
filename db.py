@@ -93,6 +93,20 @@ def init_db():
     conn.close()
 
 
+def create_account(uid, account_name):
+    """
+    Insert a new account into the 'accounts' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO accounts (uid, account_name) VALUES (%s, %s);
+    """, (uid, account_name))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 def insert_subdomain(scan_id, subdomain):
     conn = get_connection()
     cur = conn.cursor()
