@@ -1,13 +1,13 @@
-# tasks.py
+import os
+import requests
 from db import insert_subdomain, update_scan_status, insert_endpoint, insert_alert
 from subdomain_discovery import run_subfinder
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-import requests
 from urllib.parse import urljoin
 
-ZAP_API_KEY = "your_zap_api_key"  # Use environment variables in production
-ZAP_BASE_URL = "http://localhost:8080"  # Update if using an external ZAP instance
+ZAP_API_KEY = os.getenv("ZAP_API_KEY")  # Fetch from environment variable
+ZAP_BASE_URL = "http://zap-service:8080"
 
 def discover_subdomains_and_endpoints(scan_id, domain_uid):
     """
@@ -25,12 +25,8 @@ def discover_subdomains_and_endpoints(scan_id, domain_uid):
             for url in discovered_urls:
                 ep_data = analyze_api(url)
                 if ep_data:
-                    insert_endpoint(scan_id, subdomain, ep_data)
-
-        # Start ZAP passive scanning
-        zap_alerts = run_zap_scan(domain_uid)
-        for alert in zap_alerts:
-            insert_alert(scan_id, alert)
+                    endpoint_id = insert_endpoint(scan_id, subdomain, ep_data)
+                    run_zap_scan(endpoint_id, url)
 
         # Mark scan as complete
         update_scan_status(scan_id, "complete")
@@ -90,44 +86,40 @@ def analyze_api(url):
         return None
 
 
-def run_zap_scan(domain):
+def run_zap_scan(endpoint_id, url):
     """
-    Starts a ZAP passive scan for the given domain and retrieves alerts.
+    Starts a ZAP passive scan for the given URL and logs alerts.
     """
-    alerts = []
     try:
-        # Start Spider
+        # Start ZAP Spider
         response = requests.get(
             f"{ZAP_BASE_URL}/JSON/spider/action/scan/",
-            params={
-                "apikey": ZAP_API_KEY,
-                "url": f"https://{domain}",
-                "recurse": True,
-            },
+            params={"apikey": ZAP_API_KEY, "url": url, "maxChildren": 10},
         )
         response.raise_for_status()
         scan_id = response.json().get("scan")
         if not scan_id:
-            print("Failed to start ZAP Spider.")
-            return alerts
+            print(f"Failed to start ZAP Spider for {url}")
+            return
 
         # Poll Spider Status
         while True:
-            response = requests.get(
+            status_response = requests.get(
                 f"{ZAP_BASE_URL}/JSON/spider/view/status/",
                 params={"apikey": ZAP_API_KEY, "scanId": scan_id},
             )
-            response.raise_for_status()
-            if response.json().get("status") == "100":
+            status_response.raise_for_status()
+            if status_response.json().get("status") == "100":
                 break
 
         # Retrieve Alerts
-        response = requests.get(
+        alerts_response = requests.get(
             f"{ZAP_BASE_URL}/JSON/core/view/alerts/",
-            params={"apikey": ZAP_API_KEY},
+            params={"apikey": ZAP_API_KEY, "baseurl": url},
         )
-        response.raise_for_status()
-        alerts = response.json().get("alerts", [])
+        alerts_response.raise_for_status()
+        alerts = alerts_response.json().get("alerts", [])
+        for alert in alerts:
+            insert_alert(endpoint_id, alert)
     except Exception as e:
-        print(f"Error running ZAP scan: {e}")
-    return alerts
+        print(f"Error running ZAP scan on {url}: {e}")

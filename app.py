@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, request, jsonify
 from redis import Redis
 from rq import Queue
@@ -6,7 +5,7 @@ import os
 import uuid
 
 from db import init_db, create_account, create_domain, create_scan, get_scan, get_endpoint_details
-from tasks import discover_subdomains_and_endpoints, run_zap_scan
+from tasks import discover_subdomains_and_endpoints
 
 app = Flask(__name__)
 
