@@ -196,3 +196,36 @@ def get_endpoint_details(endpoint_uid):
     cur.close()
     conn.close()
     return endpoint
+
+def insert_alert(endpoint_id, alert_data):
+    """
+    Insert a new alert into the 'alerts' table.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO alerts (
+            endpoint_id, name, description, url, method, parameter, attack, evidence,
+            other_info, instances, solution, references, severity, cwe_id, wasc_id, plugin_id
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+    """, (
+        endpoint_id,
+        alert_data["name"],
+        alert_data["description"],
+        alert_data["url"],
+        alert_data.get("method", "GET"),
+        alert_data.get("parameter"),
+        alert_data.get("attack"),
+        alert_data.get("evidence"),
+        alert_data.get("other_info"),
+        alert_data.get("instances", 1),
+        alert_data.get("solution"),
+        alert_data.get("references", []),
+        alert_data.get("severity"),
+        alert_data.get("cwe_id"),
+        alert_data.get("wasc_id"),
+        alert_data.get("plugin_id"),
+    ))
