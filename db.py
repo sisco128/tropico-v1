@@ -96,7 +96,7 @@ def init_db():
             other_info TEXT,
             instances INTEGER DEFAULT 1,
             solution TEXT,
-            references TEXT[],
+            references_list TEXT[],
             severity VARCHAR(50),
             cwe_id VARCHAR(50),
             wasc_id VARCHAR(50),
@@ -223,7 +223,7 @@ def insert_alert(endpoint_id, alert_data):
     cur.execute("""
         INSERT INTO alerts (
             endpoint_id, name, description, url, method, parameter, attack, evidence,
-            other_info, instances, solution, references, severity, cwe_id, wasc_id, plugin_id
+            other_info, instances, solution, references_list, severity, cwe_id, wasc_id, plugin_id
         ) VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         ) RETURNING id;
