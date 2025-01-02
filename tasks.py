@@ -48,7 +48,10 @@ def discover_subdomains_and_endpoints(scan_uid, domain_uid):
             for url in discovered_urls:
                 ep_data = analyze_api(url)
                 if ep_data:
-                    endpoint_id = insert_endpoint(scan_pk, subdomain, ep_data)
+                    parsed = urlparse(ep_data["url"])
+                    actual_host = parsed.netloc  # e.g. "www.italotreno.com"
+
+                    endpoint_id = insert_endpoint(scan_pk, actual_host, ep_data)
                     run_zap_scan(endpoint_id, url)
 
         # Mark scan as complete
