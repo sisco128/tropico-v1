@@ -27,8 +27,8 @@ RUN playwright install --with-deps chromium
 # Copy the rest of the application
 COPY . /app
 
-# Expose port 8000 for Flask app
-EXPOSE 8000
+# Expose port 10000 for Flask app
+EXPOSE 10000
 
 # Default command to run the Flask app
 CMD ["gunicorn", "-b", "0.0.0.0:10000", "app:app"]

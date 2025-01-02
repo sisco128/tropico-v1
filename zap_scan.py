@@ -3,7 +3,7 @@ import os
 from db import insert_alert
 
 ZAP_API_KEY = os.getenv("ZAP_API_KEY")
-ZAP_BASE_URL = os.getenv("ZAP_BASE_URL", "http://localhost:8080")
+ZAP_BASE_URL = os.getenv("ZAP_BASE_URL")
 
 def start_passive_scan(target_url):
     """
