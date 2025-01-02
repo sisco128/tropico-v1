@@ -365,40 +365,14 @@ def get_scan_id_by_uid(scan_uid):
 
 def get_scan_details(scan_uid, exclude_html=False):
     """
-    Returns a dictionary with:
-      {
-        "scan_uid": ...,
-        "domain_uid": ...,
-        "status": ...,
-        "created_at": ...,
-        "subdomains": [...],
-        "endpoints": [
-          {
-            "endpoint_uid": ...,
-            "subdomain": ...,
-            "url": ...,
-            "status_code": ...,
-            "content_type": ...,
-            "server": ...,
-            "framework": ...,
-            "alerts": [
-              {
-                "alert_uid": ...,
-                "name": ...,
-                "severity": ...,
-                "created_at": ...
-              }, ...
-            ]
-          },
-          ...
-        ]
-      }
-    Optionally excludes endpoints with content_type containing 'text/html' if exclude_html=True.
+    Modified to:
+      - only return distinct alert names (instead of repeating the same alert name).
+      - keep 'scan_uid', 'status', 'subdomains' etc. at top-level, endpoints at bottom.
     """
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 1) Fetch the main scan row via UID
+    # 1) Fetch main scan row
     cur.execute("""
         SELECT s.uid AS scan_uid, s.status, s.created_at,
                d.uid AS domain_uid
@@ -412,7 +386,7 @@ def get_scan_details(scan_uid, exclude_html=False):
         conn.close()
         return None
 
-    # 2) Find the integer PK for scans to query subdomains/endpoints
+    # 2) Find integer scan PK
     cur.execute("SELECT id FROM scans WHERE uid = %s;", (scan_uid,))
     row = cur.fetchone()
     if not row:
@@ -424,13 +398,13 @@ def get_scan_details(scan_uid, exclude_html=False):
     # 3) Gather subdomains
     cur.execute("""
         SELECT subdomain
-        FROM subdomains
-        WHERE scan_id = %s
-        ORDER BY subdomain;
+          FROM subdomains
+         WHERE scan_id = %s
+         ORDER BY subdomain;
     """, (scan_pk,))
     subdomains = [r["subdomain"] for r in cur.fetchall()]
 
-    # 4) Gather endpoints + alerts in a single query
+    # 4) Gather endpoints + all alert objects
     cur.execute("""
         SELECT e.uid AS endpoint_uid,
                e.subdomain, e.url, e.status_code,
@@ -438,29 +412,36 @@ def get_scan_details(scan_uid, exclude_html=False):
                COALESCE(json_agg(
                  CASE WHEN a.id IS NOT NULL THEN
                    json_build_object(
-                     'alert_uid', a.id,
                      'name', a.name,
                      'severity', a.severity,
                      'created_at', a.created_at
                    )
                  END
                ) FILTER (WHERE a.id IS NOT NULL), '[]') AS alerts_json
-        FROM endpoints e
-        LEFT JOIN alerts a ON e.id = a.endpoint_id
-        WHERE e.scan_id = %s
-        GROUP BY e.uid, e.subdomain, e.url,
-                 e.status_code, e.content_type, e.server, e.framework
-        ORDER BY e.uid;
+          FROM endpoints e
+     LEFT JOIN alerts a ON e.id = a.endpoint_id
+         WHERE e.scan_id = %s
+         GROUP BY e.uid, e.subdomain, e.url, e.status_code,
+                  e.content_type, e.server, e.framework
+         ORDER BY e.uid;
     """, (scan_pk,))
     endpoint_rows = cur.fetchall()
 
     endpoints = []
     for er in endpoint_rows:
-        # Optionally skip endpoints if content_type ~ 'text/html'
+        # Check if we should skip "text/html" endpoints
         if exclude_html:
             ctype = (er["content_type"] or "").lower()
             if "text/html" in ctype:
                 continue
+
+        # Distinct alert names
+        raw_alerts = er["alerts_json"] or []
+        distinct_names = set()
+        for a in raw_alerts:
+            distinct_names.add(a["name"])
+        # Sort them or not
+        distinct_names_list = sorted(list(distinct_names))
 
         endpoints.append({
             "endpoint_uid": er["endpoint_uid"],
@@ -470,13 +451,15 @@ def get_scan_details(scan_uid, exclude_html=False):
             "content_type": er["content_type"],
             "server": er["server"],
             "framework": er["framework"],
-            "alerts": er["alerts_json"]  # a Python list of alert objects
+            # only the array of distinct names
+            "alerts": distinct_names_list
         })
 
     cur.close()
     conn.close()
 
     return {
+        # "Light info" at top:
         "scan_uid": scan_row["scan_uid"],
         "domain_uid": scan_row["domain_uid"],
         "status": scan_row["status"],
@@ -484,6 +467,7 @@ def get_scan_details(scan_uid, exclude_html=False):
         "subdomains": subdomains,
         "endpoints": endpoints
     }
+
 
 
 def get_endpoint_with_alerts(endpoint_uid):
