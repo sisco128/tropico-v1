@@ -15,7 +15,7 @@ from db import (
 from subdomain_discovery import run_subfinder
 
 ZAP_API_KEY = os.getenv("ZAP_API_KEY")
-ZAP_BASE_URL = "http://zap-service:8080"
+ZAP_BASE_URL = os.getenv("ZAP_BASE_URL")
 
 def discover_subdomains_and_endpoints(scan_uid, domain_uid):
     """

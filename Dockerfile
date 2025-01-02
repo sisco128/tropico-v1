@@ -31,4 +31,4 @@ COPY . /app
 EXPOSE 8000
 
 # Default command to run the Flask app
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:$PORT", "app:app"]
