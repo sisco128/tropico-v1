@@ -2,6 +2,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import uuid
+import json
 
 def get_connection():
     """
@@ -213,23 +214,52 @@ def update_scan_status(scan_uid, status):
     cur.close()
     conn.close()
 
+ALERT_SEVERITY_MAP = {
+    "Vulnerable JS Library": "High",
+    "CSP: Wildcard Directive": "Medium",
+    "CSP: script-src unsafe-inline": "Medium",
+    "CSP: style-src unsafe-inline": "Medium",
+    "Source Code Disclosure - Ruby": "Medium",
+    "Source Code Disclosure - SQL": "Medium",
+    "Sub Resource Integrity Attribute Missing": "Medium",
+    "CSP: Notices": "Low",
+    "Cross-Domain JavaScript Source File Inclusion": "Low",
+    "Permissions Policy Header Not Set": "Low",
+    "Private IP Disclosure": "Low",
+    "Server Leaks Information via \"X-Powered-By\"": "Low",
+    "Server Leaks Version Information via \"Server\"": "Low",
+    "Strict-Transport-Security Header Not Set": "Low",
+    "Timestamp Disclosure - Unix": "Low",
+    "X-Content-Type-Options Header Missing": "Low",
+    "Content-Type Header Missing": "Informational",
+    "Information Disclosure - Suspicious Comments": "Informational",
+    "Modern Web Application": "Informational",
+    "Non-Storable Content": "Informational",
+    "Re-examine Cache-control Directives": "Informational",
+    "Retrieved from Cache": "Informational",
+    "Storable and Cacheable Content": "Informational" 
+}
+
 def insert_alert(endpoint_id, alert_data):
-    """
-    Insert a new alert into the 'alerts' table.
-    """
     conn = get_connection()
     cur = conn.cursor()
 
+    name = alert_data.get("name", "")
+    zap_severity = alert_data.get("severity", "Unknown")
+    # If name is in the map, override the severity
+    custom_severity = ALERT_SEVERITY_MAP.get(name, zap_severity)
+
+    # Then do your INSERT with custom_severity
     cur.execute("""
         INSERT INTO alerts (
             endpoint_id, name, description, url, method, parameter, attack, evidence,
-            other_info, instances, solution, references_list, severity, cwe_id, wasc_id, plugin_id
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-        ) RETURNING id;
+            other_info, instances, solution, references_list, severity,
+            cwe_id, wasc_id, plugin_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
     """, (
         endpoint_id,
-        alert_data.get("name"),
+        name,
         alert_data.get("description"),
         alert_data.get("url"),
         alert_data.get("method", "GET"),
@@ -240,21 +270,23 @@ def insert_alert(endpoint_id, alert_data):
         alert_data.get("instances", 1),
         alert_data.get("solution"),
         alert_data.get("references", []),
-        alert_data.get("severity"),
+        custom_severity,
         alert_data.get("cwe_id"),
         alert_data.get("wasc_id"),
         alert_data.get("plugin_id"),
     ))
     alert_id = cur.fetchone()[0]
 
-    # Optionally, update the alerts array in the endpoints table
     cur.execute("""
-        UPDATE endpoints SET alerts = array_append(alerts, %s) WHERE id = %s;
+        UPDATE endpoints
+        SET alerts = array_append(alerts, %s)
+        WHERE id = %s;
     """, (alert_id, endpoint_id))
 
     conn.commit()
     cur.close()
     conn.close()
+
 
 def insert_subdomain(scan_id, subdomain):
     """
@@ -329,3 +361,203 @@ def get_scan_id_by_uid(scan_uid):
     cur.close()
     conn.close()
     return row[0] if row else None
+
+
+def get_scan_details(scan_uid, exclude_html=False):
+    """
+    Returns a dictionary with:
+      {
+        "scan_uid": ...,
+        "domain_uid": ...,
+        "status": ...,
+        "created_at": ...,
+        "subdomains": [...],
+        "endpoints": [
+          {
+            "endpoint_uid": ...,
+            "subdomain": ...,
+            "url": ...,
+            "status_code": ...,
+            "content_type": ...,
+            "server": ...,
+            "framework": ...,
+            "alerts": [
+              {
+                "alert_uid": ...,
+                "name": ...,
+                "severity": ...,
+                "created_at": ...
+              }, ...
+            ]
+          },
+          ...
+        ]
+      }
+    Optionally excludes endpoints with content_type containing 'text/html' if exclude_html=True.
+    """
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 1) Fetch the main scan row via UID
+    cur.execute("""
+        SELECT s.uid AS scan_uid, s.status, s.created_at,
+               d.uid AS domain_uid
+        FROM scans s
+        JOIN domains d ON s.domain_id = d.id
+        WHERE s.uid = %s;
+    """, (scan_uid,))
+    scan_row = cur.fetchone()
+    if not scan_row:
+        cur.close()
+        conn.close()
+        return None
+
+    # 2) Find the integer PK for scans to query subdomains/endpoints
+    cur.execute("SELECT id FROM scans WHERE uid = %s;", (scan_uid,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return None
+    scan_pk = row["id"]
+
+    # 3) Gather subdomains
+    cur.execute("""
+        SELECT subdomain
+        FROM subdomains
+        WHERE scan_id = %s
+        ORDER BY subdomain;
+    """, (scan_pk,))
+    subdomains = [r["subdomain"] for r in cur.fetchall()]
+
+    # 4) Gather endpoints + alerts in a single query
+    cur.execute("""
+        SELECT e.uid AS endpoint_uid,
+               e.subdomain, e.url, e.status_code,
+               e.content_type, e.server, e.framework,
+               COALESCE(json_agg(
+                 CASE WHEN a.id IS NOT NULL THEN
+                   json_build_object(
+                     'alert_uid', a.id,
+                     'name', a.name,
+                     'severity', a.severity,
+                     'created_at', a.created_at
+                   )
+                 END
+               ) FILTER (WHERE a.id IS NOT NULL), '[]') AS alerts_json
+        FROM endpoints e
+        LEFT JOIN alerts a ON e.id = a.endpoint_id
+        WHERE e.scan_id = %s
+        GROUP BY e.uid, e.subdomain, e.url,
+                 e.status_code, e.content_type, e.server, e.framework
+        ORDER BY e.uid;
+    """, (scan_pk,))
+    endpoint_rows = cur.fetchall()
+
+    endpoints = []
+    for er in endpoint_rows:
+        # Optionally skip endpoints if content_type ~ 'text/html'
+        if exclude_html:
+            ctype = (er["content_type"] or "").lower()
+            if "text/html" in ctype:
+                continue
+
+        endpoints.append({
+            "endpoint_uid": er["endpoint_uid"],
+            "subdomain": er["subdomain"],
+            "url": er["url"],
+            "status_code": er["status_code"],
+            "content_type": er["content_type"],
+            "server": er["server"],
+            "framework": er["framework"],
+            "alerts": er["alerts_json"]  # a Python list of alert objects
+        })
+
+    cur.close()
+    conn.close()
+
+    return {
+        "scan_uid": scan_row["scan_uid"],
+        "domain_uid": scan_row["domain_uid"],
+        "status": scan_row["status"],
+        "created_at": scan_row["created_at"],
+        "subdomains": subdomains,
+        "endpoints": endpoints
+    }
+
+
+def get_endpoint_with_alerts(endpoint_uid):
+    """
+    Returns:
+      {
+        "endpoint_uid": ...,
+        "scan_uid": ...,
+        "subdomain": ...,
+        "url": ...,
+        "status_code": ...,
+        "content_type": ...,
+        "server": ...,
+        "framework": ...,
+        "created_at": ...,
+        "alerts": [
+          {
+            "alert_uid": ...,
+            "name": ...,
+            "severity": ...,
+            ...
+          }
+        ]
+      }
+    """
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Fetch the endpoint row (with the scan UID)
+    cur.execute("""
+        SELECT e.uid AS endpoint_uid,
+               s.uid AS scan_uid,
+               e.subdomain, e.url, e.status_code,
+               e.content_type, e.server, e.framework,
+               e.created_at
+        FROM endpoints e
+        JOIN scans s ON e.scan_id = s.id
+        WHERE e.uid = %s;
+    """, (endpoint_uid,))
+    endpoint_row = cur.fetchone()
+    if not endpoint_row:
+        cur.close()
+        conn.close()
+        return None
+
+    # Gather the full alerts for that endpoint
+    cur.execute("""
+        SELECT a.id AS alert_uid,
+               a.name, a.description, a.url, a.method,
+               a.parameter, a.attack, a.evidence,
+               a.other_info, a.instances,
+               a.solution, a.references_list,
+               a.severity, a.cwe_id, a.wasc_id,
+               a.plugin_id, a.created_at
+        FROM alerts a
+        JOIN endpoints e ON a.endpoint_id = e.id
+        WHERE e.uid = %s
+        ORDER BY a.created_at;
+    """, (endpoint_uid,))
+    alerts = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return {
+        "endpoint_uid": endpoint_row["endpoint_uid"],
+        "scan_uid": endpoint_row["scan_uid"],
+        "subdomain": endpoint_row["subdomain"],
+        "url": endpoint_row["url"],
+        "status_code": endpoint_row["status_code"],
+        "content_type": endpoint_row["content_type"],
+        "server": endpoint_row["server"],
+        "framework": endpoint_row["framework"],
+        "created_at": endpoint_row["created_at"],
+        "alerts": alerts
+    }
+

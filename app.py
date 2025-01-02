@@ -4,7 +4,7 @@ from rq import Queue
 import os
 import uuid
 
-from db import init_db, create_account, create_domain, create_scan, get_scan, get_endpoint_details
+from db import init_db, create_account, create_domain, create_scan, get_scan, get_endpoint_details, get_scan_details, get_endpoint_with_alerts
 from tasks import discover_subdomains_and_endpoints
 
 app = Flask(__name__)
@@ -61,6 +61,25 @@ def get_endpoint_details_api(account_uid, endpoint_uid):
     if not endpoint_data:
         return jsonify({"error": "Not found"}), 404
     return jsonify(endpoint_data)
+
+@app.route("/account/<account_uid>/domain/<domain_uid>/scan/<scan_uid>", methods=["GET"])
+def get_scan_results_api(account_uid, domain_uid, scan_uid):
+    # optional query param to exclude HTML endpoints
+    exclude_html_param = request.args.get("exclude_html", "").lower()
+    exclude_html = (exclude_html_param == "true")
+
+    details = get_scan_details(scan_uid, exclude_html=exclude_html)
+    if not details:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(details)
+
+@app.route("/account/<account_uid>/endpoint/<endpoint_uid>", methods=["GET"])
+def get_endpoint_details_api(account_uid, endpoint_uid):
+    endpoint_data = get_endpoint_with_alerts(endpoint_uid)
+    if not endpoint_data:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(endpoint_data)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000, debug=True)
