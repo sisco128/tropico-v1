@@ -1,44 +1,63 @@
 import os
 import requests
-from db import insert_alert, insert_subdomain, update_scan_status, insert_endpoint
-from subdomain_discovery import run_subfinder
-from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from urllib.parse import urljoin
 
+from db import (
+    insert_alert,
+    insert_subdomain,
+    update_scan_status,
+    insert_endpoint,
+    get_domain_name_by_uid,
+    get_scan_id_by_uid
+)
+from subdomain_discovery import run_subfinder
+
 ZAP_API_KEY = os.getenv("ZAP_API_KEY")
-ZAP_BASE_URL = "http://zap-service:8080"  # Corrected to match the provided configuration
+ZAP_BASE_URL = "http://zap-service:8080"
 
-
-def discover_subdomains_and_endpoints(scan_id, domain_uid):
+def discover_subdomains_and_endpoints(scan_uid, domain_uid):
     """
     Combines subdomain discovery, endpoint discovery, and ZAP passive scanning.
+    This function uses the *UUID* for scan_uid, then looks up the integer PK.
+    Likewise, it looks up the domain_name from the domain UID.
     """
     try:
-        # Mark scan as started
-        update_scan_status(scan_id, "in_progress")
+        # Mark scan as "in_progress"
+        update_scan_status(scan_uid, "in_progress")
+
+        # Convert the scan UID to the integer scans.id
+        scan_pk = get_scan_id_by_uid(scan_uid)
+        if not scan_pk:
+            raise ValueError(f"Scan UID={scan_uid} not found in DB.")
+
+        # Get the actual domain name from the domain UID
+        domain_name = get_domain_name_by_uid(domain_uid)
+        if not domain_name:
+            raise ValueError(f"Domain UID={domain_uid} not found in DB.")
 
         # Subdomain discovery
-        subdomains = run_subfinder(domain_uid)
+        subdomains = run_subfinder(domain_name)  # Pass the real domain name
         for subdomain in subdomains:
-            insert_subdomain(scan_id, subdomain)
+            insert_subdomain(scan_pk, subdomain)  # Insert with integer PK
 
-        # Endpoint discovery and ZAP scanning
+        # Endpoint discovery for each subdomain
         for subdomain in subdomains:
             discovered_urls = discover_endpoints(subdomain)
             for url in discovered_urls:
                 ep_data = analyze_api(url)
                 if ep_data:
-                    endpoint_id = insert_endpoint(scan_id, subdomain, ep_data)
+                    endpoint_id = insert_endpoint(scan_pk, subdomain, ep_data)
                     run_zap_scan(endpoint_id, url)
 
         # Mark scan as complete
-        update_scan_status(scan_id, "complete")
+        update_scan_status(scan_uid, "complete")
 
     except Exception as e:
         print(f"Error in discover_subdomains_and_endpoints: {e}")
-        update_scan_status(scan_id, "error")
-
+        # Mark the scan as failed (error)
+        update_scan_status(scan_uid, "error")
 
 def discover_endpoints(subdomain):
     """
@@ -57,24 +76,30 @@ def discover_endpoints(subdomain):
                 browser.close()
                 return []
 
+            # Grab the HTML content and parse
             soup = BeautifulSoup(page.content(), "html.parser")
+
+            # Collect all links from <a href="...">
             links = [a.get("href") for a in soup.find_all("a", href=True)]
+            # Collect all script sources from <script src="...">
             scripts = [s.get("src") for s in soup.find_all("script", src=True)]
 
             for link in links + scripts:
                 if link:
-                    discovered_urls.append(urljoin(url, link))
+                    # Normalize to absolute URL
+                    full_url = urljoin(url, link)
+                    discovered_urls.append(full_url)
 
-            discovered_urls = list(set(discovered_urls))
+            discovered_urls = list(set(discovered_urls))  # Remove duplicates
             browser.close()
     except Exception as e:
         print(f"Error discovering endpoints on {subdomain}: {e}")
-    return discovered_urls
 
+    return discovered_urls
 
 def analyze_api(url):
     """
-    Perform basic analysis of the given URL.
+    Perform basic analysis (status code, headers, etc.) of the given URL.
     """
     try:
         r = requests.get(url, timeout=5)
@@ -83,16 +108,16 @@ def analyze_api(url):
             "status_code": r.status_code,
             "content_type": r.headers.get("Content-Type", "Unknown"),
             "server": r.headers.get("Server", "Unknown"),
-            "framework": "Unknown",
+            "framework": "Unknown",  # You could do more analysis if needed
         }
     except Exception as e:
         print(f"Error analyzing URL {url}: {e}")
         return None
 
-
 def run_zap_scan(endpoint_id, url):
     """
-    Starts a ZAP passive scan for the given URL and logs alerts.
+    Performs a ZAP spider scan on the given URL, then collects any alerts.
+    endpoint_id is the integer PK of the endpoints row.
     """
     try:
         # Start ZAP Spider
@@ -106,7 +131,7 @@ def run_zap_scan(endpoint_id, url):
             print(f"Failed to start ZAP Spider for {url}")
             return
 
-        # Poll Spider Status
+        # Poll Spider Status until it's 100%
         while True:
             status_response = requests.get(
                 f"{ZAP_BASE_URL}/JSON/spider/view/status/",
@@ -116,14 +141,16 @@ def run_zap_scan(endpoint_id, url):
             if status_response.json().get("status") == "100":
                 break
 
-        # Retrieve Alerts
+        # Retrieve ZAP Alerts
         alerts_response = requests.get(
             f"{ZAP_BASE_URL}/JSON/core/view/alerts/",
             params={"apikey": ZAP_API_KEY, "baseurl": url},
         )
         alerts_response.raise_for_status()
         alerts = alerts_response.json().get("alerts", [])
+
         for alert in alerts:
             insert_alert(endpoint_id, alert)
+
     except Exception as e:
         print(f"Error running ZAP scan on {url}: {e}")

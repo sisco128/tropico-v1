@@ -202,7 +202,7 @@ def get_endpoint_details(endpoint_uid):
 
 def update_scan_status(scan_uid, status):
     """
-    Update the status of a scan.
+    Update the status of a scan by its UID.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -247,7 +247,7 @@ def insert_alert(endpoint_id, alert_data):
     ))
     alert_id = cur.fetchone()[0]
 
-    # Optionally, you can append the alert_id to the alerts array in the endpoints table
+    # Optionally, update the alerts array in the endpoints table
     cur.execute("""
         UPDATE endpoints SET alerts = array_append(alerts, %s) WHERE id = %s;
     """, (alert_id, endpoint_id))
@@ -259,22 +259,22 @@ def insert_alert(endpoint_id, alert_data):
 def insert_subdomain(scan_id, subdomain):
     """
     Insert a subdomain into the 'subdomains' table.
+    `scan_id` must be the integer primary key from `scans.id`.
     """
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
         INSERT INTO subdomains (scan_id, subdomain)
         VALUES (%s, %s);
     """, (scan_id, subdomain))
-
     conn.commit()
     cur.close()
     conn.close()
 
 def insert_endpoint(scan_id, subdomain, ep_data):
     """
-    Insert an endpoint into the 'endpoints' table and return its ID.
+    Insert an endpoint into the 'endpoints' table and return its integer ID.
+    `scan_id` must be the integer primary key from `scans.id`.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -300,3 +300,32 @@ def insert_endpoint(scan_id, subdomain, ep_data):
     cur.close()
     conn.close()
     return endpoint_id
+
+
+def get_domain_name_by_uid(domain_uid):
+    """
+    Retrieve the domain_name from domains table by its UID (the UUID).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT domain_name FROM domains WHERE uid = %s;
+    """, (domain_uid,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+def get_scan_id_by_uid(scan_uid):
+    """
+    Retrieve the integer primary key (id) for the given scan UID (the UUID).
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id FROM scans WHERE uid = %s;
+    """, (scan_uid,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
