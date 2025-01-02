@@ -48,19 +48,6 @@ def create_scan_api(account_uid, domain_uid):
     job = q.enqueue(discover_subdomains_and_endpoints, scan_uid, domain_uid)
     return jsonify({"scan_uid": scan_uid, "job_id": job.get_id()}), 201
 
-@app.route("/account/<account_uid>/domain/<domain_uid>/scan/<scan_uid>", methods=["GET"])
-def get_scan_results_api(account_uid, domain_uid, scan_uid):
-    scan_data = get_scan(scan_uid)
-    if not scan_data:
-        return jsonify({"error": "Not found"}), 404
-    return jsonify(scan_data)
-
-@app.route("/account/<account_uid>/endpoint/<endpoint_uid>", methods=["GET"])
-def get_endpoint_details_api(account_uid, endpoint_uid):
-    endpoint_data = get_endpoint_details(endpoint_uid)
-    if not endpoint_data:
-        return jsonify({"error": "Not found"}), 404
-    return jsonify(endpoint_data)
 
 @app.route("/account/<account_uid>/domain/<domain_uid>/scan/<scan_uid>", methods=["GET"])
 def get_scan_results_api(account_uid, domain_uid, scan_uid):
